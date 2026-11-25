@@ -1,0 +1,44 @@
+{
+  "manifest_version": 2,
+  "id": "github.yunshanluan0714.living-rhythm",
+  "version": "1.0.0",
+  "plugin_type": "extension",
+  "name": "拟人作息、现实锚点与主动社交",
+  "description": "面向原生 MaiBot 的拟人作息与主动互动扩展：支持昼夜作息状态机与深夜自动静默/醒来爬楼、QQ 在线状态与昼夜终端同步、私聊输入态、群接龙/投票/拟人延迟红包互动、城市实时天气与节假日调休锚点，以及圈层热榜低频破冰。",
+  "author": {
+    "name": "yunshanluan0714",
+    "url": "https://github.com/yunshanluan0714"
+  },
+  "license": "MIT",
+  "urls": {
+    "repository": "https://github.com/yunshanluan0714/maibot-living-rhythm",
+    "homepage": "https://github.com/yunshanluan0714/maibot-living-rhythm",
+    "documentation": "https://github.com/yunshanluan0714/maibot-living-rhythm/blob/main/README.md",
+    "issues": "https://github.com/yunshanluan0714/maibot-living-rhythm/issues"
+  },
+  "host_application": {
+    "min_version": "1.3.19",
+    "max_version": "1.4.99"
+  },
+  "sdk": {
+    "min_version": "2.20.0",
+    "max_version": "2.30.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "api.call",
+    "api.list",
+    "chat.get_group_streams",
+    "chat.open_session",
+    "config.get",
+    "frequency.set_adjust",
+    "maisaka.proactive.trigger",
+    "send.text"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  }
+}
