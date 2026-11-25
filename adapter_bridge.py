@@ -35,7 +35,7 @@ class DynamicAdapterBridge:
             if name == "action.call" or name.endswith(".action.call"):
                 if not self._generic_call_api:
                     self._generic_call_api = full
-            for short in ("send_poke", "delete_msg", "set_online_status", "set_input_status", "_set_model_show", "set_model_show"):
+            for short in ("send_poke", "delete_msg", "set_online_status", "set_input_status"):
                 if name == short or name.endswith("." + short):
                     self._direct_apis.setdefault(short, full)
 
@@ -77,7 +77,7 @@ class DynamicAdapterBridge:
             if mode == "generic":
                 resp = await api_cap.call(api_name, action_name=action_name, params=params)
             else:
-                if action_name in ("set_online_status", "set_input_status", "_set_model_show", "set_model_show"):
+                if action_name in ("set_online_status", "set_input_status"):
                     resp = await api_cap.call(api_name, params=params)
                 else:
                     resp = await api_cap.call(api_name, **params)

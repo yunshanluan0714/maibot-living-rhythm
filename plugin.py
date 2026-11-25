@@ -16,18 +16,24 @@ from maibot_sdk.types import ErrorPolicy, HookMode, HookOrder
 from .adapter_bridge import DynamicAdapterBridge
 from .circle_radar import CircleRadarStore
 from .config import LivingRhythmConfig
-from .micro_actions import (
-    SolitaireSignal,
-    detect_group_poll,
-    detect_group_solitaire,
-    resolve_presence_for_phase,
-)
+from .micro_actions import resolve_presence_for_phase
 from .reality_anchor import RealityAnchorManager
 from .schedule_engine import SleepCatchupStore, resolve_schedule_state, score_catchup_message
 
 _ATTR_RE = re.compile(r'(\w+)="([^"]*)"')
 _HEADER_RE = re.compile(r"^\s*<message\b([^>]*)>", re.S)
 _POKE_TEXT_RE = re.compile(r"戳了戳|发起了戳一戳")
+
+
+def _extract_components(msg: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = msg.get("raw_message")
+    if isinstance(raw, list):
+        return [c for c in raw if isinstance(c, dict)]
+    if isinstance(raw, dict):
+        comps = raw.get("components")
+        if isinstance(comps, list):
+            return [c for c in comps if isinstance(c, dict)]
+    return []
 
 
 def _extract_last_user_from_items(items: list[dict[str, Any]]) -> tuple[str, str, str]:
@@ -86,8 +92,8 @@ class LivingRhythmPlugin(MaiBotPlugin):
         self._bot_account = ""
         self._bot_nickname = ""
         self._bot_aliases: list[str] = []
-        self._pending_solitaire: dict[str, SolitaireSignal] = {}
-        self._pending_poll: set[str] = set()
+        self._session_to_group: dict[str, str] = {}
+        self._session_to_private: dict[str, str] = {}
         self._last_group_activity: dict[str, float] = {}
         self._last_cold_trigger: dict[str, float] = {}
         self._cold_daily_count: dict[str, tuple[str, int]] = {}
@@ -110,6 +116,7 @@ class LivingRhythmPlugin(MaiBotPlugin):
         )
         self._apply_config_to_engines()
         await self._refresh_bot_identity()
+        await self._warm_stream_mappings()
         self._running = True
         self._loop_task = asyncio.create_task(self._run_scheduler_loop(), name="living-rhythm-loop")
         self.ctx.logger.info("拟人作息、现实锚点与主动社交插件已加载")
@@ -170,10 +177,50 @@ class LivingRhythmPlugin(MaiBotPlugin):
             enabled=bool(cfg.plugin.enabled and cfg.schedule.enabled),
         )
 
+    async def _warm_stream_mappings(self) -> None:
+        try:
+            getter = getattr(self.ctx.chat, "get_all_streams", None) or getattr(self.ctx.chat, "get_group_streams", None)
+            if getter is None:
+                return
+            raw = await getter(platform="qq")
+            streams = raw.get("streams", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
+            if not isinstance(streams, list):
+                return
+            for st in streams:
+                if not isinstance(st, dict):
+                    continue
+                sid = str(st.get("session_id") or st.get("stream_id") or "").strip()
+                if not sid:
+                    continue
+                gid = str(st.get("group_id") or "").strip()
+                uid = str(st.get("user_id") or "").strip()
+                if st.get("is_group_session") or st.get("chat_type") == "group" or gid:
+                    if gid:
+                        self._session_to_group[sid] = gid
+                else:
+                    self._session_to_group.setdefault(sid, "")
+                    if uid:
+                        self._session_to_private[sid] = uid
+        except Exception:
+            pass
+
+    def _resolve_session_context(self, session_id: str) -> tuple[bool, str, str]:
+        sid = str(session_id or "").strip()
+        if sid in self._session_to_group:
+            gid = self._session_to_group[sid]
+            return bool(gid), gid, self._session_to_private.get(sid, "")
+        if ":group:" in sid:
+            gid = sid.split(":group:")[-1]
+            return True, gid, ""
+        if ":user:" in sid:
+            uid = sid.split(":user:")[-1]
+            return False, "", uid
+        return False, "", self._session_to_private.get(sid, "")
+
     @HookHandler(
         "chat.receive.after_process",
         name="living_rhythm_receive_after_process",
-        description="记录休眠期高价值消息、识别接龙/投票与清醒期回戳",
+        description="记录休眠期高价值消息与清醒期回戳",
         mode=HookMode.OBSERVE,
         order=HookOrder.NORMAL,
         timeout_ms=3000,
@@ -203,33 +250,33 @@ class LivingRhythmPlugin(MaiBotPlugin):
 
         plain_text = str(msg.get("processed_plain_text") or "").strip()
         now_ts = time.time()
-        if session_id and user_id:
-            self._recent_senders[session_id] = (user_id, sender_name)
+        if session_id:
+            self._session_to_group[session_id] = group_id
+            if user_id:
+                self._recent_senders[session_id] = (user_id, sender_name)
+                if not group_id:
+                    self._session_to_private[session_id] = user_id
         if group_id:
             self._last_group_activity[group_id] = now_ts
 
-        raw_msg = msg.get("raw_message") if isinstance(msg.get("raw_message"), dict) else {}
-        components = raw_msg.get("components") if isinstance(raw_msg.get("components"), list) else []
+        components = _extract_components(msg)
         at_bot = False
         for comp in components:
-            if not isinstance(comp, dict):
-                continue
             ctype = str(comp.get("type") or "")
+            cdata = comp.get("data") if isinstance(comp.get("data"), dict) else comp
             if "At" in ctype or ctype == "at":
-                tid = str(comp.get("target_user_id") or comp.get("qq") or "").strip()
+                tid = str(
+                    cdata.get("target_user_id")
+                    or cdata.get("qq")
+                    or comp.get("target_user_id")
+                    or comp.get("qq")
+                    or ""
+                ).strip()
                 if self._bot_account and tid == self._bot_account:
                     at_bot = True
 
         aliases = self._all_aliases()
         mentioned_bot = at_bot or any(a.lower() in plain_text.lower() for a in aliases)
-
-        if group_id and self.config.micro_actions.enabled:
-            if self.config.micro_actions.solitaire_enabled:
-                sol = detect_group_solitaire(plain_text)
-                if sol is not None:
-                    self._pending_solitaire[session_id] = sol
-            if self.config.micro_actions.poll_enabled and detect_group_poll(plain_text):
-                self._pending_poll.add(session_id)
 
         sched = self._current_schedule()
         if sched.is_sleep and self.config.schedule.wake_catchup_enabled and self._sleep_store is not None:
@@ -290,7 +337,7 @@ class LivingRhythmPlugin(MaiBotPlugin):
     @HookHandler(
         "maisaka.planner.before_request",
         name="living_rhythm_planner_inject",
-        description="注入作息状态、接龙/投票提示、现实天气节假日锚点与圈层热榜见闻",
+        description="注入作息状态、现实天气节假日锚点与圈层热榜见闻",
         mode=HookMode.BLOCKING,
         order=HookOrder.NORMAL,
         timeout_ms=2000,
@@ -305,8 +352,7 @@ class LivingRhythmPlugin(MaiBotPlugin):
             return unchanged
 
         session_id = str(kwargs.get("session_id") or "").strip()
-        is_group = ":group:" in session_id
-        private_uid = session_id.split(":user:")[-1] if (not is_group and ":user:" in session_id) else ""
+        is_group, _, private_uid = self._resolve_session_context(session_id)
         _, latest_text, latest_uid = _extract_last_user_from_items(items)
         if not latest_uid and session_id in self._recent_senders:
             latest_uid, _ = self._recent_senders[session_id]
@@ -325,14 +371,6 @@ class LivingRhythmPlugin(MaiBotPlugin):
         hints: list[str] = []
         if sched.hint:
             hints.append(sched.hint)
-
-        if is_group and self.config.micro_actions.enabled:
-            sol = self._pending_solitaire.pop(session_id, None)
-            if sol is not None:
-                hints.append(f"[群接龙] 群友发起了「{sol.topic}」接龙，当前到第 {sol.next_index - 1} 项，若话题相关可按格式顺手接第 {sol.next_index} 条。")
-            if session_id in self._pending_poll:
-                self._pending_poll.discard(session_id)
-                hints.append("[群投票] 群里发起了投票，如果感兴趣可以随口表态或评论几句，不感兴趣就略过。")
 
         if self.config.reality_anchor.enabled:
             cal_trigger = any(k in latest_text for k in ("放假", "节", "调休", "上班", "早八", "考试", "期末", "周五", "周一", "双11", "618"))
@@ -379,7 +417,7 @@ class LivingRhythmPlugin(MaiBotPlugin):
             return
         target = resolve_presence_for_phase(phase)
         self._last_synced_presence_phase = phase
-        await self._bridge.call_action(
+        ok, _ = await self._bridge.call_action(
             self.ctx.api,
             "set_online_status",
             {
@@ -388,14 +426,8 @@ class LivingRhythmPlugin(MaiBotPlugin):
                 "battery_status": target.battery_status,
             },
         )
-        if self.config.presence.sync_device_model:
-            model_name = (
-                self.config.presence.day_device_name
-                if target.device_kind == "day"
-                else self.config.presence.night_device_name
-            )
-            if model_name.strip():
-                await self._bridge.call_action(self.ctx.api, "_set_model_show", {"model_show": model_name.strip()})
+        if ok:
+            self.ctx.logger.info("已同步 QQ 在线状态: phase=%s label=%s", target.phase, target.label)
 
     async def _sync_sleep_frequency(self, is_sleep: bool) -> None:
         if not self.config.schedule.auto_adjust_frequency:

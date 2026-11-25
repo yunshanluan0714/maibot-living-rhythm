@@ -9,7 +9,7 @@ class PluginSection(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = Field(default=True, description="启用拟人作息、现实锚点与主动社交插件")
-    config_version: str = Field(default="1.0.0", description="配置版本")
+    config_version: str = Field(default="1.0.2", description="配置版本")
 
 
 class ScheduleSection(PluginConfigBase):
@@ -35,21 +35,8 @@ class PresenceSection(PluginConfigBase):
     __ui_order__ = 2
 
     enabled: bool = Field(default=True, description="配合虚拟作息自动同步 QQ 在线状态（若宿主有兼容适配器）")
-    sync_device_model: bool = Field(default=False, description="按白天电脑/晚上手机切换设备标识（部分客户端不支持时自动跳过）")
-    day_device_name: str = Field(default="Windows PC", description="白天在线设备标识")
-    night_device_name: str = Field(default="iPhone", description="夜间在线设备标识")
     private_typing_status: bool = Field(default=True, description="私聊回复前尝试触发「正在输入...」状态")
     custom_action_api: str = Field(default="", description="可选：手动指定适配器 action.call API 全名，留空自动探测")
-
-
-class MicroActionsSection(PluginConfigBase):
-    __ui_label__ = "群接龙与群投票"
-    __ui_icon__ = "gift"
-    __ui_order__ = 3
-
-    enabled: bool = Field(default=True, description="启用群接龙与群投票感知互动")
-    solitaire_enabled: bool = Field(default=True, description="识别群 #接龙 并按需参与跟队")
-    poll_enabled: bool = Field(default=True, description="识别群投票并顺口表态互动")
 
 
 class RealityAnchorSection(PluginConfigBase):
@@ -103,7 +90,6 @@ class LivingRhythmConfig(PluginConfigBase):
     plugin: PluginSection = Field(default_factory=PluginSection)
     schedule: ScheduleSection = Field(default_factory=ScheduleSection)
     presence: PresenceSection = Field(default_factory=PresenceSection)
-    micro_actions: MicroActionsSection = Field(default_factory=MicroActionsSection)
     reality_anchor: RealityAnchorSection = Field(default_factory=RealityAnchorSection)
     circle_radar: CircleRadarSection = Field(default_factory=CircleRadarSection)
     proactive: ProactiveSection = Field(default_factory=ProactiveSection)

@@ -8,11 +8,7 @@ import unittest
 
 from adapter_bridge import DynamicAdapterBridge
 from circle_radar import CircleRadarStore, CircleTopic
-from micro_actions import (
-    detect_group_poll,
-    detect_group_solitaire,
-    resolve_presence_for_phase,
-)
+from micro_actions import resolve_presence_for_phase
 from reality_anchor import RealityAnchorManager, WeatherSnapshot, resolve_calendar_anchor
 from schedule_engine import SleepCatchupStore, resolve_schedule_state, score_catchup_message
 
@@ -68,14 +64,11 @@ class LivingRhythmTests(unittest.TestCase):
             self.assertEqual(len(picked), 1)
             self.assertEqual(store.pending_count(), 0)
 
-    def test_micro_actions_and_presence(self) -> None:
+    def test_presence_phase_mapping(self) -> None:
         self.assertEqual(resolve_presence_for_phase("SLEEP").label, "睡觉中")
-        self.assertEqual(resolve_presence_for_phase("MORNING_SLACK").device_kind, "day")
-        sol = detect_group_solitaire("#接龙 周六活动\n1. A\n2. B")
-        self.assertIsNotNone(sol)
-        assert sol is not None
-        self.assertEqual(sol.next_index, 3)
-        self.assertTrue(detect_group_poll("[群投票] 晚上吃啥"))
+        self.assertEqual(resolve_presence_for_phase("SLEEP").ext_status, 1016)
+        self.assertEqual(resolve_presence_for_phase("MORNING_SLACK").label, "学习中")
+        self.assertEqual(resolve_presence_for_phase("MORNING_SLACK").ext_status, 1018)
 
     def test_reality_anchor_and_circle_radar(self) -> None:
         rain = WeatherSnapshot(city="上海", condition="大雨", temp_c="12", fetched_at=100.0)
