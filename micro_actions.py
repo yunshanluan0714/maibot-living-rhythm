@@ -1,9 +1,8 @@
-"""QQ presence/device sync, private typing indicator, and group micro-actions (solitaire/poll/redpacket)."""
+"""QQ presence/device sync, private typing indicator, and group micro-actions (solitaire/poll)."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-import random
 import re
 from typing import Any
 
@@ -20,8 +19,6 @@ _PHASE_STATUS_MAP: dict[str, dict[str, Any]] = {
 
 _SOLITAIRE_NUM_RE = re.compile(r"(?:^|\n)\s*(\d+)\.\s+([^\n]+)")
 _POLL_RE = re.compile(r"(?:\[群投票\]|\[投票\]|发起了群投票|邀请你参与投票)", re.I)
-_REDPACKET_RE = re.compile(r"(?:\[QQ红包\]|\[红包\]|\[拼手气红包\]|收到一个红包|发了一个红包)", re.I)
-_AMOUNT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*元")
 
 
 @dataclass(frozen=True)
@@ -39,13 +36,6 @@ class SolitaireSignal:
     next_index: int
     topic: str
     last_item: str
-
-
-@dataclass(frozen=True)
-class RedpacketPlan:
-    should_miss: bool
-    delay_seconds: float
-    reaction_text: str
 
 
 def resolve_presence_for_phase(phase: str) -> PresenceTarget:
@@ -75,46 +65,3 @@ def detect_group_solitaire(text: str) -> SolitaireSignal | None:
 
 def detect_group_poll(text: str) -> bool:
     return bool(_POLL_RE.search(str(text or "")))
-
-
-def is_redpacket_message(text: str) -> bool:
-    return bool(_REDPACKET_RE.search(str(text or "")))
-
-
-def plan_redpacket_reaction(
-    text: str,
-    *,
-    rng: random.Random | None = None,
-    min_delay: float = 2.0,
-    max_delay: float = 8.0,
-    miss_prob: float = 0.22,
-    opened_amount: float | None = None,
-) -> RedpacketPlan:
-    r = rng or random.Random()
-    lo = max(1.5, float(min_delay))
-    hi = max(lo + 0.5, float(max_delay))
-    delay = round(r.uniform(lo, hi), 2)
-
-    if r.random() < max(0.0, min(1.0, float(miss_prob))):
-        return RedpacketPlan(should_miss=True, delay_seconds=delay, reaction_text="")
-
-    amt = opened_amount
-    if amt is None:
-        m = _AMOUNT_RE.search(str(text or ""))
-        if m:
-            try:
-                amt = float(m.group(1))
-            except ValueError:
-                amt = None
-
-    if amt is not None:
-        if amt >= 5.0:
-            reply = r.choice(["谢谢老板！大气", "哇谢谢老板，吃顿好的", "老板发财！"])
-        elif amt >= 0.5:
-            reply = r.choice(["谢谢老板", "感谢老板的小红包", "美滋滋 谢谢老板"])
-        else:
-            reply = r.choice(["几分也是爱，谢谢老板", "好家伙这手气", "谢谢老板的巨款"])
-    else:
-        reply = r.choice(["谢谢老板", "手慢了差一点", "看看大家手气"])
-
-    return RedpacketPlan(should_miss=False, delay_seconds=delay, reaction_text=reply)

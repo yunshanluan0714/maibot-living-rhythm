@@ -20,8 +20,6 @@ from .micro_actions import (
     SolitaireSignal,
     detect_group_poll,
     detect_group_solitaire,
-    is_redpacket_message,
-    plan_redpacket_reaction,
     resolve_presence_for_phase,
 )
 from .reality_anchor import RealityAnchorManager
@@ -175,7 +173,7 @@ class LivingRhythmPlugin(MaiBotPlugin):
     @HookHandler(
         "chat.receive.after_process",
         name="living_rhythm_receive_after_process",
-        description="记录休眠期高价值消息、识别接龙/投票/红包延迟互动与清醒期回戳",
+        description="记录休眠期高价值消息、识别接龙/投票与清醒期回戳",
         mode=HookMode.OBSERVE,
         order=HookOrder.NORMAL,
         timeout_ms=3000,
@@ -255,15 +253,6 @@ class LivingRhythmPlugin(MaiBotPlugin):
 
         if (
             not sched.is_sleep
-            and group_id
-            and self.config.micro_actions.enabled
-            and self.config.micro_actions.redpacket_enabled
-            and is_redpacket_message(plain_text)
-        ):
-            asyncio.create_task(self._handle_redpacket_delayed(session_id=session_id, group_id=group_id, text=plain_text))
-
-        if (
-            not sched.is_sleep
             and self.config.proactive.enabled
             and self.config.proactive.poke_back_enabled
             and user_id
@@ -277,40 +266,6 @@ class LivingRhythmPlugin(MaiBotPlugin):
             ):
                 self._last_poke_back[session_id] = now_ts
                 asyncio.create_task(self._send_poke_back(user_id=user_id, group_id=group_id))
-
-    async def _handle_redpacket_delayed(self, *, session_id: str, group_id: str, text: str) -> None:
-        try:
-            plan = plan_redpacket_reaction(
-                text,
-                rng=self._rng,
-                min_delay=self.config.micro_actions.redpacket_min_delay_sec,
-                max_delay=self.config.micro_actions.redpacket_max_delay_sec,
-                miss_prob=self.config.micro_actions.redpacket_miss_probability,
-            )
-            await asyncio.sleep(plan.delay_seconds)
-            if not self._running or self._current_schedule().is_sleep or plan.should_miss:
-                return
-
-            opened_amount: float | None = None
-            custom_action = str(self.config.micro_actions.redpacket_open_action or "").strip()
-            if custom_action:
-                ok, res = await self._bridge.call_action(self.ctx.api, custom_action, {"group_id": group_id})
-                if ok and isinstance(res, dict):
-                    raw_amt = res.get("amount") or res.get("money")
-                    try:
-                        if raw_amt is not None:
-                            opened_amount = float(raw_amt)
-                    except (TypeError, ValueError):
-                        opened_amount = None
-                if opened_amount is not None:
-                    plan = plan_redpacket_reaction(text, rng=self._rng, miss_prob=0.0, opened_amount=opened_amount)
-
-            if plan.reaction_text:
-                await self.ctx.send.text(plan.reaction_text, session_id)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            pass
 
     async def _send_poke_back(self, *, user_id: str, group_id: str) -> None:
         try:

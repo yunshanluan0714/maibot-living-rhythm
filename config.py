@@ -43,18 +43,13 @@ class PresenceSection(PluginConfigBase):
 
 
 class MicroActionsSection(PluginConfigBase):
-    __ui_label__ = "接龙投票与延迟红包"
+    __ui_label__ = "群接龙与群投票"
     __ui_icon__ = "gift"
     __ui_order__ = 3
 
-    enabled: bool = Field(default=True, description="启用群接龙、群投票感知与拟人化延迟红包互动")
+    enabled: bool = Field(default=True, description="启用群接龙与群投票感知互动")
     solitaire_enabled: bool = Field(default=True, description="识别群 #接龙 并按需参与跟队")
     poll_enabled: bool = Field(default=True, description="识别群投票并顺口表态互动")
-    redpacket_enabled: bool = Field(default=True, description="识别红包并在延迟 2-8 秒后拟人化感谢或随机错过")
-    redpacket_min_delay_sec: float = Field(default=2.0, ge=1.5, le=10.0, description="红包最小延迟秒数")
-    redpacket_max_delay_sec: float = Field(default=8.0, ge=2.0, le=20.0, description="红包最大延迟秒数")
-    redpacket_miss_probability: float = Field(default=0.22, ge=0.0, le=1.0, description="假装错过不理红包的概率")
-    redpacket_open_action: str = Field(default="", description="可选：协议端自定义拆红包动作名（留空则仅延迟后文字互动）")
 
 
 class RealityAnchorSection(PluginConfigBase):

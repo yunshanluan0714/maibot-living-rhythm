@@ -2,7 +2,6 @@
 
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-import random
 import tempfile
 import time
 import unittest
@@ -12,8 +11,6 @@ from circle_radar import CircleRadarStore, CircleTopic
 from micro_actions import (
     detect_group_poll,
     detect_group_solitaire,
-    is_redpacket_message,
-    plan_redpacket_reaction,
     resolve_presence_for_phase,
 )
 from reality_anchor import RealityAnchorManager, WeatherSnapshot, resolve_calendar_anchor
@@ -79,10 +76,6 @@ class LivingRhythmTests(unittest.TestCase):
         assert sol is not None
         self.assertEqual(sol.next_index, 3)
         self.assertTrue(detect_group_poll("[群投票] 晚上吃啥"))
-        self.assertTrue(is_redpacket_message("[QQ红包] 恭喜发财"))
-        plan = plan_redpacket_reaction("[QQ红包] 8元", rng=random.Random(1), miss_prob=0.0)
-        self.assertFalse(plan.should_miss)
-        self.assertGreaterEqual(plan.delay_seconds, 2.0)
 
     def test_reality_anchor_and_circle_radar(self) -> None:
         rain = WeatherSnapshot(city="上海", condition="大雨", temp_c="12", fetched_at=100.0)
