@@ -1,16 +1,12 @@
-"""Unit tests for maibot-living-rhythm pure logic modules."""
+"""Unit tests for maibot-living-rhythm v2.0.0 pure logic modules."""
 
-from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
-import tempfile
-import time
+from datetime import datetime, timedelta, timezone
 import unittest
 
 from adapter_bridge import DynamicAdapterBridge
-from circle_radar import CircleRadarStore, CircleTopic
+from link_preview import LinkPreviewCache, extract_previewable_urls, is_safe_public_url, parse_html_summary
 from micro_actions import resolve_presence_for_phase
-from reality_anchor import RealityAnchorManager, WeatherSnapshot, resolve_calendar_anchor
-from schedule_engine import SleepCatchupStore, resolve_schedule_state, score_catchup_message
+from schedule_engine import resolve_schedule_state
 
 
 class LivingRhythmTests(unittest.TestCase):
@@ -37,51 +33,50 @@ class LivingRhythmTests(unittest.TestCase):
         self.assertEqual(mode2, "direct")
         self.assertEqual(target2, "other.adapter.message.send_poke")
 
-    def test_schedule_phases_and_catchup(self) -> None:
+    def test_schedule_zero_daytime_prompt_bloat(self) -> None:
         tz = timezone(timedelta(hours=8))
         ts_sleep = datetime(2026, 11, 25, 3, 15, tzinfo=tz).timestamp()
-        ts_wake = datetime(2026, 11, 25, 8, 10, tzinfo=tz).timestamp()
-        self.assertTrue(resolve_schedule_state(now_ts=ts_sleep).is_sleep)
-        self.assertEqual(resolve_schedule_state(now_ts=ts_wake).phase, "WAKE_CATCHUP")
+        ts_morning = datetime(2026, 11, 25, 10, 15, tzinfo=tz).timestamp()
+        ts_evening = datetime(2026, 11, 25, 20, 30, tzinfo=tz).timestamp()
 
-        with tempfile.TemporaryDirectory() as td:
-            store = SleepCatchupStore(Path(td))
-            self.assertGreaterEqual(
-                score_catchup_message("小助手明天几点集合？", is_private=False, is_at_bot=True, bot_aliases=["小助手"]),
-                4.0,
-            )
-            store.record_sleep_message(
-                session_id="qq:group:1",
-                group_id="1",
-                user_id="u1",
-                sender_name="甲",
-                message_id="m1",
-                text="明天有安排吗？",
-                score=5.0,
-                created_at=1000.0,
-            )
-            picked = store.pop_catchup_targets(max_per_group=1, now_ts=1100.0)
-            self.assertEqual(len(picked), 1)
-            self.assertEqual(store.pending_count(), 0)
+        st_sleep = resolve_schedule_state(now_ts=ts_sleep)
+        self.assertTrue(st_sleep.is_sleep)
+        self.assertEqual(st_sleep.phase, "SLEEP")
+
+        st_morning = resolve_schedule_state(now_ts=ts_morning)
+        self.assertFalse(st_morning.is_sleep)
+        self.assertEqual(st_morning.phase, "MORNING_SLACK")
+        self.assertEqual(st_morning.hint, "")
+
+        st_evening = resolve_schedule_state(now_ts=ts_evening)
+        self.assertFalse(st_evening.is_sleep)
+        self.assertEqual(st_evening.hint, "")
 
     def test_presence_phase_mapping(self) -> None:
         self.assertEqual(resolve_presence_for_phase("SLEEP").label, "睡觉中")
         self.assertEqual(resolve_presence_for_phase("SLEEP").ext_status, 1016)
         self.assertEqual(resolve_presence_for_phase("MORNING_SLACK").label, "学习中")
-        self.assertEqual(resolve_presence_for_phase("MORNING_SLACK").ext_status, 1018)
+        self.assertEqual(resolve_presence_for_phase("LUNCH").label, "干饭中")
+        self.assertEqual(resolve_presence_for_phase("LATE_DROWSY").status, 30)
 
-    def test_reality_anchor_and_circle_radar(self) -> None:
-        rain = WeatherSnapshot(city="上海", condition="大雨", temp_c="12", fetched_at=100.0)
-        mgr = RealityAnchorManager(city="上海")
-        mgr.weather = rain
-        self.assertIn("上海", mgr.build_hint(latest_text="外面下雨外卖好慢"))
-        self.assertIn("调休", resolve_calendar_anchor(date(2026, 11, 28), adjusted_workdays=["2026-11-28"]))
+    def test_link_preview_extract_ssrf_and_cache(self) -> None:
+        text = "看看这篇 https://mp.weixin.qq.com/s/demo123 和这个 https://www.bilibili.com/video/BV1xx"
+        urls = extract_previewable_urls(text)
+        self.assertEqual(urls, ["https://mp.weixin.qq.com/s/demo123"])
 
-        with tempfile.TemporaryDirectory() as td:
-            radar = CircleRadarStore(Path(td), tags=["AI", "游戏"])
-            now = time.time()
-            radar.topics = [CircleTopic(title="AI开源项目更新", source="B站科技区", tag="AI", fetched_at=now)]
-            self.assertIn("AI开源项目更新", radar.match_hint("最近AI圈有什么新闻", now_ts=now + 10))
+        self.assertFalse(is_safe_public_url("http://127.0.0.1:8080/admin"))
+        self.assertFalse(is_safe_public_url("http://192.168.1.1/login"))
+        self.assertFalse(is_safe_public_url("http://localhost/test"))
+
+        html = "<html><head><title>测试文章</title><meta name='description' content='这是一段长度超过二十四个字符的公开文章内容摘要用于测试提取逻辑。'></head><body>正文</body></html>"
+        title, snippet = parse_html_summary(html)
+        self.assertEqual(title, "测试文章")
+        self.assertIn("公开文章内容摘要", snippet)
+
+        cache = LinkPreviewCache(ttl_seconds=60)
+        cache.set("https://example.com/a", "《示例》", now_ts=100.0)
+        self.assertEqual(cache.get("https://example.com/a", now_ts=120.0), "《示例》")
+        self.assertIsNone(cache.get("https://example.com/a", now_ts=200.0))
 
 
 if __name__ == "__main__":
