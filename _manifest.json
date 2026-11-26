@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "github.yunshanluan0714.living-rhythm",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "plugin_type": "extension",
   "name": "作息状态、QQ 轻互动与网页链接摘要",
   "description": "面向原生 MaiBot 的零补丁轻量拟人插件（常态 0 Prompt 干扰）：昼夜时段联动 QQ 在线状态与深夜硬静默、私聊正在输入状态、清醒时段拍一拍自动回戳，以及带 SSRF 校验的非视频网页链接自动摘要。",
@@ -31,6 +31,7 @@
     "chat.get_all_streams",
     "chat.get_group_streams",
     "config.get",
+    "frequency.get_adjust",
     "frequency.set_adjust"
   ],
   "i18n": {

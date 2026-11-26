@@ -1,17 +1,19 @@
-"""Safe web link preview fetcher with SSRF guard, configurable skip domains, and TTL cache."""
+"""Safe web link preview fetcher with SSRF guard, pinned-IP connect, redirect validation, and TTL cache."""
 
 from __future__ import annotations
 
 from collections import OrderedDict
+from contextlib import closing
 from html import unescape
 from html.parser import HTMLParser
+import http.client
 import ipaddress
 import re
 import socket
+import ssl
 import time
 from typing import Iterable
 import urllib.parse
-import urllib.request
 
 _URL_RE = re.compile(r"https?://[^\s<>\"'\]）)]+", re.I)
 DEFAULT_SKIP_HOSTS: tuple[str, ...] = (
@@ -71,8 +73,10 @@ def extract_previewable_urls(text: str, *, skip_domains: Iterable[str] = DEFAULT
     urls: list[str] = []
     for raw in _URL_RE.findall(str(text or "")):
         url = raw.rstrip(".,;:!?，。；：！？")
-        parsed = urllib.parse.urlsplit(url)
-        host = (parsed.hostname or "").lower()
+        try:
+            host = (urllib.parse.urlsplit(url).hostname or "").lower()
+        except ValueError:
+            continue
         if not host:
             continue
         if any(host == skip or host.endswith("." + skip) for skip in skip_list):
@@ -82,42 +86,68 @@ def extract_previewable_urls(text: str, *, skip_domains: Iterable[str] = DEFAULT
     return urls[:2]
 
 
+def _resolve_public_target(url: str) -> tuple[urllib.parse.SplitResult, str, int, list]:
+    parsed = urllib.parse.urlsplit(url)
+    host = (parsed.hostname or "").rstrip(".").encode("idna").decode("ascii").lower()
+    if (
+        parsed.scheme not in ("http", "https")
+        or not host
+        or parsed.username is not None
+        or "%" in host
+        or host in ("localhost", "localhost.localdomain")
+        or host.endswith(".local")
+    ):
+        raise ValueError("Unsupported preview URL")
+    port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+    addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
+    if not addresses:
+        raise ValueError("No preview destination")
+    for family, _, _, _, address in addresses:
+        ip = ipaddress.ip_address(address[0])
+        if family not in (socket.AF_INET, socket.AF_INET6) or not ip.is_global or ip.is_multicast or ip.is_reserved:
+            raise ValueError("Non-public preview destination")
+        if isinstance(ip, ipaddress.IPv6Address) and (ip.sixtofour or ip.teredo):
+            raise ValueError("Unsupported IPv6 transition address")
+    return parsed, host, port, addresses
+
+
 def is_safe_public_url(url: str) -> bool:
     try:
-        parsed = urllib.parse.urlsplit(url)
-    except Exception:
-        return False
-    if parsed.scheme not in ("http", "https"):
-        return False
-    host = (parsed.hostname or "").strip().lower()
-    if not host or host in ("localhost", "localhost.localdomain") or host.endswith(".local"):
+        _resolve_public_target(url)
+        return True
+    except (ValueError, OSError):
         return False
 
-    def _ip_unsafe(ip_str: str) -> bool:
+
+def _connect_public(
+    parsed: urllib.parse.SplitResult,
+    host: str,
+    port: int,
+    addresses: list,
+    deadline: float,
+) -> http.client.HTTPConnection:
+    secure = parsed.scheme == "https"
+    context = ssl.create_default_context() if secure else None
+    last_error = None
+    for family, socktype, protocol, _, address in addresses:
+        timeout = deadline - time.monotonic()
+        if timeout <= 0:
+            raise TimeoutError("Preview timed out")
+        sock = socket.socket(family, socktype, protocol)
         try:
-            ip = ipaddress.ip_address(ip_str)
-            return (
-                ip.is_private
-                or ip.is_loopback
-                or ip.is_link_local
-                or ip.is_reserved
-                or ip.is_multicast
-                or ip.is_unspecified
-            )
-        except ValueError:
-            return False
-
-    if _ip_unsafe(host):
-        return False
-    try:
-        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
-        for info in infos:
-            addr = info[4][0]
-            if _ip_unsafe(addr):
-                return False
-    except Exception:
-        return False
-    return True
+            sock.settimeout(timeout)
+            sock.connect(address)  # Connect directly to validated numeric IP to prevent DNS rebinding.
+            if context is not None:
+                sock = context.wrap_socket(sock, server_hostname=host)
+                conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=context)
+            else:
+                conn = http.client.HTTPConnection(host, port, timeout=timeout)
+            conn.sock = sock
+            return conn
+        except (OSError, ValueError) as exc:
+            sock.close()
+            last_error = exc
+    raise OSError("Preview connection failed") from last_error
 
 
 def parse_html_summary(html_text: str, *, max_chars: int = 360) -> tuple[str, str]:
@@ -164,25 +194,34 @@ class LinkPreviewCache:
 
 
 def fetch_url_summary_sync(url: str, *, timeout_seconds: float = 5.0, max_chars: int = 360) -> str:
-    if not is_safe_public_url(url):
-        return ""
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        },
-    )
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
     try:
-        with urllib.request.urlopen(req, timeout=float(timeout_seconds)) as resp:
-            ctype = str(resp.headers.get("Content-Type") or "").lower()
-            if ctype and not any(t in ctype for t in ("text/html", "application/xhtml", "text/plain")):
-                return ""
-            raw = resp.read(262144)
-            charset = resp.headers.get_content_charset() or "utf-8"
-            html_text = raw.decode(charset, errors="replace")
-    except Exception:
+        deadline = time.monotonic() + float(timeout_seconds)
+        for _ in range(6):
+            parsed, host, port, addresses = _resolve_public_target(url)
+            with closing(_connect_public(parsed, host, port, addresses, deadline)) as conn:
+                target = urllib.parse.urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+                conn.request("GET", target, headers=headers)
+                with conn.getresponse() as resp:
+                    location = resp.getheader("Location")
+                    if resp.status in (301, 302, 303, 307, 308) and location:
+                        url = urllib.parse.urljoin(url, location)
+                        continue
+                    if not 200 <= resp.status < 300:
+                        return ""
+                    ctype = resp.headers.get_content_type()
+                    if ctype not in ("text/html", "application/xhtml+xml", "text/plain"):
+                        return ""
+                    raw = resp.read(262144)
+                    html_text = raw.decode(resp.headers.get_content_charset() or "utf-8", errors="replace")
+                    break
+        else:
+            return ""
+    except (ValueError, OSError, LookupError, http.client.HTTPException):
         return ""
 
     title, snippet = parse_html_summary(html_text, max_chars=max_chars)

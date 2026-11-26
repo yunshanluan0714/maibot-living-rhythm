@@ -1,4 +1,4 @@
-"""Main plugin wiring for github.yunshanluan0714.living-rhythm v2.0.0."""
+"""Main plugin wiring for github.yunshanluan0714.living-rhythm v2.0.1."""
 
 from __future__ import annotations
 
@@ -106,7 +106,7 @@ class LivingRhythmPlugin(MaiBotPlugin):
         self._last_typing_ping: dict[str, float] = {}
         self._last_synced_presence_phase: str = ""
         self._sleep_freq_applied: bool | None = None
-        self._muted_sessions: set[str] = set()
+        self._muted_sessions: dict[str, float] = {}
 
     async def on_load(self) -> None:
         self._apply_config_to_engines()
@@ -114,7 +114,7 @@ class LivingRhythmPlugin(MaiBotPlugin):
         await self._warm_stream_mappings()
         self._running = True
         self._loop_task = asyncio.create_task(self._run_scheduler_loop(), name="living-rhythm-loop")
-        self.ctx.logger.info("作息状态、QQ 轻互动与网页摘要插件 v2.0.0 已加载")
+        self.ctx.logger.info("作息状态、QQ 轻互动与网页摘要插件 v2.0.1 已加载")
 
     async def on_unload(self) -> None:
         self._running = False
@@ -133,6 +133,14 @@ class LivingRhythmPlugin(MaiBotPlugin):
         self._apply_config_to_engines()
         self._last_synced_presence_phase = ""
         await self._refresh_bot_identity()
+        if self._muted_sessions and (
+            not self.config.plugin.enabled
+            or not self.config.schedule.enabled
+            or not self.config.schedule.auto_adjust_frequency
+        ):
+            restored = await self._restore_muted_sessions()
+            if restored:
+                self._sleep_freq_applied = False
 
     def _apply_config_to_engines(self) -> None:
         cfg = self.config
@@ -407,11 +415,49 @@ class LivingRhythmPlugin(MaiBotPlugin):
         if ok:
             self.ctx.logger.info("已同步 QQ 在线状态: phase=%s label=%s", target.phase, target.label)
 
+    @staticmethod
+    def _parse_frequency_value(raw: Any, default: float = 1.0) -> float:
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            return float(raw)
+        if isinstance(raw, dict):
+            if raw.get("success") is False:
+                return default
+            for key in ("value", "adjust", "result"):
+                val = raw.get(key)
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    return float(val)
+        return default
+
+    async def _read_current_frequency(self, sid: str) -> float:
+        getter = getattr(self.ctx.frequency, "get_adjust", None)
+        if not callable(getter):
+            return 1.0
+        try:
+            raw = await getter(sid)
+            return self._parse_frequency_value(raw, default=1.0)
+        except Exception:
+            return 1.0
+
     async def _sync_sleep_frequency(self, is_sleep: bool) -> None:
-        if not self.config.schedule.auto_adjust_frequency:
+        if not self.config.plugin.enabled or not self.config.schedule.enabled or not self.config.schedule.auto_adjust_frequency:
+            if self._muted_sessions:
+                restored = await self._restore_muted_sessions()
+                self._sleep_freq_applied = False if restored else True
+            else:
+                self._sleep_freq_applied = False
             return
-        if self._sleep_freq_applied is is_sleep:
+
+        if not is_sleep:
+            if self._muted_sessions:
+                restored = await self._restore_muted_sessions()
+                self._sleep_freq_applied = False if restored else True
+            else:
+                self._sleep_freq_applied = False
             return
+
+        if self._sleep_freq_applied is True:
+            return
+
         try:
             raw_streams = await self.ctx.chat.get_group_streams(platform="qq")
             streams = (
@@ -424,29 +470,39 @@ class LivingRhythmPlugin(MaiBotPlugin):
         if not isinstance(streams, list):
             return
 
-        if is_sleep:
-            for st in streams:
-                if not isinstance(st, dict):
-                    continue
-                sid = str(st.get("session_id") or "").strip()
-                if not sid:
-                    continue
-                try:
-                    await self.ctx.frequency.set_adjust(sid, 0.0)
-                    self._muted_sessions.add(sid)
-                except Exception:
-                    pass
-        else:
-            await self._restore_muted_sessions()
-        self._sleep_freq_applied = is_sleep
-
-    async def _restore_muted_sessions(self) -> None:
-        for sid in list(self._muted_sessions):
+        all_muted = True
+        for st in streams:
+            if not isinstance(st, dict):
+                continue
+            sid = str(st.get("session_id") or "").strip()
+            if not sid:
+                continue
+            prev_val = self._muted_sessions.get(sid)
+            if prev_val is None:
+                prev_val = await self._read_current_frequency(sid)
             try:
-                await self.ctx.frequency.set_adjust(sid, 1.0)
+                res = await self.ctx.frequency.set_adjust(sid, 0.0)
+                if isinstance(res, dict) and res.get("success") is False:
+                    all_muted = False
+                    continue
+                self._muted_sessions.setdefault(sid, prev_val)
             except Exception:
-                pass
-            self._muted_sessions.discard(sid)
+                all_muted = False
+        if all_muted:
+            self._sleep_freq_applied = True
+
+    async def _restore_muted_sessions(self) -> bool:
+        all_restored = True
+        for sid, prev_val in list(self._muted_sessions.items()):
+            try:
+                res = await self.ctx.frequency.set_adjust(sid, prev_val)
+                if isinstance(res, dict) and res.get("success") is False:
+                    all_restored = False
+                    continue
+                self._muted_sessions.pop(sid, None)
+            except Exception:
+                all_restored = False
+        return all_restored
 
     async def _run_scheduler_loop(self) -> None:
         while self._running:
